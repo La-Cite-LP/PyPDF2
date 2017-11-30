@@ -81,7 +81,7 @@ class PdfFileWriter(object):
     This class supports writing PDF files out, given pages produced by another
     class (typically :class:`PdfFileReader<PdfFileReader>`).
     """
-    def __init__(self):
+    def __init__(self, producer="PyPDF2"):
         self._header = b_("%PDF-1.3")
         self._objects = []  # array of indirect objects
 
@@ -97,7 +97,7 @@ class PdfFileWriter(object):
         # info object
         info = DictionaryObject()
         info.update({
-                NameObject("/Producer"): createStringObject(codecs.BOM_UTF16_BE + u_("PyPDF2").encode('utf-16be'))
+                NameObject("/Producer"): createStringObject(codecs.BOM_UTF16_BE + u_(producer).encode('utf-16be'))
                 })
         self._info = self._addObject(info)
 
@@ -311,17 +311,29 @@ class PdfFileWriter(object):
         endobj
         
         """
-        embeddedFilesNamesDictionary = DictionaryObject()
-        embeddedFilesNamesDictionary.update({
-                NameObject("/Names"): ArrayObject([createStringObject(fname), filespec])
+        try:
+            embeddedFilesDictionary=self._root_object["/Names"]["/EmbeddedFiles"]
+        except:
+            embeddedFilesDictionary=DictionaryObject()
+
+        try:
+            embeddedFilesNamesDictionary=embeddedFilesDictionary["/Names"]
+            embeddedFilesNamesDictionary.append(createStringObject(fname))
+            embeddedFilesNamesDictionary.append(filespec)
+
+        except:
+            embeddedFilesNamesDictionary = DictionaryObject()
+            ar= ArrayObject([createStringObject(fname), filespec])
+
+            embeddedFilesNamesDictionary.update({
+                NameObject("/Names"): ar
                 })
-        
-        embeddedFilesDictionary = DictionaryObject()
-        embeddedFilesDictionary.update({
+
+            embeddedFilesDictionary.update({
                 NameObject("/EmbeddedFiles"): embeddedFilesNamesDictionary
                 })
-        # Update the root
-        self._root_object.update({
+            # Update the root
+            self._root_object.update({
                 NameObject("/Names"): embeddedFilesDictionary
                 })
 
@@ -485,7 +497,6 @@ class PdfFileWriter(object):
         # Begin writing:
         object_positions = []
         stream.write(self._header + b_("\n"))
-        stream.write(b_("%\xE2\xE3\xCF\xD3\n"))
         for i in range(len(self._objects)):
             idnum = (i + 1)
             obj = self._objects[i]
@@ -572,8 +583,6 @@ class PdfFileWriter(object):
                     self._sweepIndirectReferences(externMap, realdata)
                     return data
             else:
-                if data.pdf.stream.closed:
-                    raise ValueError("I/O operation on closed file: {}".format(data.pdf.stream.name))
                 newobj = externMap.get(data.pdf, {}).get(data.generation, {}).get(data.idnum, None)
                 if newobj == None:
                     try:
@@ -591,9 +600,6 @@ class PdfFileWriter(object):
                         return newobj_ido
                     except ValueError:
                         # Unable to resolve the Object, returning NullObject instead.
-                        warnings.warn("Unable to resolve [{}: {}], returning NullObject instead".format(
-                            data.__class__.__name__, data
-                        ))
                         return NullObject()
                 return newobj
         else:
@@ -895,64 +901,6 @@ class PdfFileWriter(object):
                                 operands[0][i] = TextStringObject()
 
             pageRef.__setitem__(NameObject('/Contents'), content)
-
-    def addURI(self, pagenum, uri, rect, border=None):
-        """
-        Add an URI from a rectangular area to the specified page.
-        This uses the basic structure of AddLink
-
-        :param int pagenum: index of the page on which to place the URI action.
-        :param int uri: string -- uri of resource to link to.
-        :param rect: :class:`RectangleObject<PyPDF2.generic.RectangleObject>` or array of four
-            integers specifying the clickable rectangular area
-            ``[xLL, yLL, xUR, yUR]``, or string in the form ``"[ xLL yLL xUR yUR ]"``.
-        :param border: if provided, an array describing border-drawing
-            properties. See the PDF spec for details. No border will be
-            drawn if this argument is omitted.
-
-        REMOVED FIT/ZOOM ARG
-        -John Mulligan
-        """
-
-        pageLink = self.getObject(self._pages)['/Kids'][pagenum]
-        pageRef = self.getObject(pageLink)
-
-        if border is not None:
-            borderArr = [NameObject(n) for n in border[:3]]
-            if len(border) == 4:
-                dashPattern = ArrayObject([NameObject(n) for n in border[3]])
-                borderArr.append(dashPattern)
-        else:
-            borderArr = [NumberObject(2)] * 3
-
-        if isString(rect):
-            rect = NameObject(rect)
-        elif isinstance(rect, RectangleObject):
-            pass
-        else:
-            rect = RectangleObject(rect)
-
-        lnk2 = DictionaryObject()
-        lnk2.update({
-        NameObject('/S'): NameObject('/URI'),
-        NameObject('/URI'): TextStringObject(uri)
-        });
-        lnk = DictionaryObject()
-        lnk.update({
-        NameObject('/Type'): NameObject('/Annot'),
-        NameObject('/Subtype'): NameObject('/Link'),
-        NameObject('/P'): pageLink,
-        NameObject('/Rect'): rect,
-        NameObject('/H'): NameObject('/I'),
-        NameObject('/Border'): ArrayObject(borderArr),
-        NameObject('/A'): lnk2
-        })
-        lnkRef = self._addObject(lnk)
-
-        if "/Annots" in pageRef:
-            pageRef['/Annots'].append(lnkRef)
-        else:
-            pageRef[NameObject('/Annots')] = ArrayObject([lnkRef])
 
     def addLink(self, pagenum, pagedest, rect, border=None, fit='/Fit', *args):
         """
@@ -1291,6 +1239,17 @@ class PdfFileReader(object):
                 self._buildField(field, retval, fileobj, fieldAttributes)
 
         return retval
+        
+    def getAttachment(self, name):
+        for i in range (0, len(self.trailer["/Root"]["/Names"]["/EmbeddedFiles"]["/Names"]), 2):
+            if self.trailer["/Root"]["/Names"]["/EmbeddedFiles"]["/Names"][i+1].getObject()["/F"]==name:
+                return self.trailer["/Root"]["/Names"]["/EmbeddedFiles"]["/Names"][i+1].getObject()["/EF"]["/F"].getObject().getData()
+
+    def listAttachments(self):
+
+        for i in range (0, len(self.trailer["/Root"]["/Names"]["/EmbeddedFiles"]["/Names"]), 2):
+            yield self.trailer["/Root"]["/Names"]["/EmbeddedFiles"]["/Names"][i+1].getObject()["/F"]
+
 
     def _buildField(self, field, retval, fileobj, fieldAttributes):
         self._checkKids(field, retval, fileobj)
@@ -2057,7 +2016,7 @@ class PdfFileReader(object):
         if encrypt['/Filter'] != '/Standard':
             raise NotImplementedError("only Standard PDF encryption handler is available")
         if not (encrypt['/V'] in (1, 2)):
-            raise NotImplementedError("only algorithm code 1 and 2 are supported. This PDF uses code %s" % encrypt['/V'])
+            raise NotImplementedError("only algorithm code 1 and 2 are supported")
         user_password, key = self._authenticateUserPassword(password)
         if user_password:
             self._decryption_key = key
@@ -2731,7 +2690,7 @@ class ContentStream(DecodedStreamObject):
         if isinstance(stream, ArrayObject):
             data = b_("")
             for s in stream:
-                data += b_(s.getObject().getData())
+                data += s.getObject().getData()
             stream = BytesIO(b_(data))
         else:
             stream = BytesIO(b_(stream.getData()))
